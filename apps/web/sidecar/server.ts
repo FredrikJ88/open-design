@@ -175,13 +175,42 @@ function resolveHttpProxyTarget(
   return new URL(`${parsedRequestUrl.pathname}${parsedRequestUrl.search}`, origin);
 }
 
+export function normalizeDaemonProxyOriginHeader(options: {
+  daemonOrigin: string;
+  origin: string | undefined;
+  webPort: number;
+}): string | undefined {
+  if (options.origin == null || options.origin.length === 0) return options.origin;
+
+  const schemes = ["http", "https"];
+  const loopbackHosts = ["127.0.0.1", "localhost", "[::1]", HOST];
+  const allowedWebOrigins = new Set(
+    schemes.flatMap((scheme) => loopbackHosts.map((host) => `${scheme}://${host}:${options.webPort}`)),
+  );
+
+  return allowedWebOrigins.has(options.origin) ? options.daemonOrigin : options.origin;
+}
+
 async function proxyHttpRequest(
   target: URL,
   request: IncomingMessage,
   response: ServerResponse,
+  options: { daemonWebPort?: number } = {},
 ): Promise<void> {
   const proxyRequestFactory = target.protocol === "https:" ? createHttpsRequest : createHttpRequest;
   const headers = { ...request.headers, host: target.host };
+  if (options.daemonWebPort != null) {
+    const origin = normalizeDaemonProxyOriginHeader({
+      daemonOrigin: target.origin,
+      origin: typeof request.headers.origin === "string" ? request.headers.origin : undefined,
+      webPort: options.daemonWebPort,
+    });
+    if (origin == null || origin.length === 0) {
+      delete headers.origin;
+    } else {
+      headers.origin = origin;
+    }
+  }
 
   await new Promise<void>((resolveProxy) => {
     const proxyRequest = proxyRequestFactory(
@@ -498,7 +527,10 @@ function createDaemonProxyHandler(
   return (request, response) => {
     const daemonProxyTarget = daemonOrigin == null ? null : resolveDaemonProxyTarget(daemonOrigin, request.url);
     if (daemonProxyTarget != null) {
-      void proxyHttpRequest(daemonProxyTarget, request, response).catch((error: unknown) => {
+      const localPort = request.socket.localPort;
+      void proxyHttpRequest(daemonProxyTarget, request, response, {
+        daemonWebPort: typeof localPort === "number" ? localPort : 0,
+      }).catch((error: unknown) => {
         response.statusCode = 502;
         response.end(error instanceof Error ? error.message : String(error));
       });
