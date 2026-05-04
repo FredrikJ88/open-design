@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  createStandaloneParentMonitorImport,
+  createStandaloneServerArgs,
   normalizeDaemonProxyOriginHeader,
   resolveDaemonProxyTarget,
   resolveStandaloneServerEntry,
@@ -80,6 +82,28 @@ describe('resolveStandaloneServerEntry', () => {
       await rm(webRoot, { force: true, recursive: true });
       await rm(copiedRoot, { force: true, recursive: true });
     }
+  });
+});
+
+describe('createStandaloneServerArgs', () => {
+  it('preloads a parent monitor before running the standalone server entry', () => {
+    const args = createStandaloneServerArgs('/tmp/open-design/server.js');
+
+    expect(args).toHaveLength(3);
+    expect(args[0]).toBe('--import');
+    expect(args[1]).toBe(createStandaloneParentMonitorImport());
+    expect(args[2]).toBe('/tmp/open-design/server.js');
+  });
+
+  it('uses a data import that exits when the recorded parent disappears', () => {
+    const importSpecifier = createStandaloneParentMonitorImport('OD_TEST_PARENT_PID');
+    const source = decodeURIComponent(importSpecifier.replace(/^data:text\/javascript,/, ''));
+
+    expect(importSpecifier).toMatch(/^data:text\/javascript,/);
+    expect(source).toContain('process.env["OD_TEST_PARENT_PID"]');
+    expect(source).toContain('process.ppid === parentPid');
+    expect(source).toContain('process.kill(parentPid, 0)');
+    expect(source).toContain('process.exit(0)');
   });
 });
 

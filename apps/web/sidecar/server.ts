@@ -38,6 +38,7 @@ const WEB_PORT_ENV = SIDECAR_ENV.WEB_PORT;
 const TOOLS_DEV_PARENT_PID_ENV = SIDECAR_ENV.TOOLS_DEV_PARENT_PID;
 const WEB_OUTPUT_MODE_ENV = "OD_WEB_OUTPUT_MODE";
 const WEB_STANDALONE_ROOT_ENV = "OD_WEB_STANDALONE_ROOT";
+const STANDALONE_PARENT_PID_ENV = "OD_STANDALONE_PARENT_PID";
 const STANDALONE_STARTUP_TIMEOUT_ENV = "OD_STANDALONE_STARTUP_TIMEOUT_MS";
 const SHUTDOWN_TIMEOUT_MS = 3000;
 const require = createRequire(import.meta.url);
@@ -107,6 +108,32 @@ function parsePositiveIntegerEnv(envName: string, defaultValue: number): number 
 
 function resolveStandaloneStartupTimeoutMs(): number {
   return parsePositiveIntegerEnv(STANDALONE_STARTUP_TIMEOUT_ENV, 35_000);
+}
+
+export function createStandaloneParentMonitorImport(parentPidEnv = STANDALONE_PARENT_PID_ENV): string {
+  const source = `
+const parentPid = Number(process.env[${JSON.stringify(parentPidEnv)}]);
+if (Number.isInteger(parentPid) && parentPid > 0) {
+  const isParentAlive = () => {
+    try {
+      process.kill(parentPid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const timer = setInterval(() => {
+    if (process.ppid === parentPid && isParentAlive()) return;
+    process.exit(0);
+  }, 1000);
+  timer.unref?.();
+}
+`;
+  return `data:text/javascript,${encodeURIComponent(source)}`;
+}
+
+export function createStandaloneServerArgs(entryPath: string): string[] {
+  return ["--import", createStandaloneParentMonitorImport(), entryPath];
 }
 
 function resolveWebDistDir(webRoot: string): string {
@@ -377,13 +404,14 @@ async function startStandaloneBackend(webRoot: string): Promise<StandaloneBacken
   const port = await reserveTcpPort();
   const origin = `http://${HOST}:${port}`;
   console.log(`[open-design web] starting standalone Next.js server from ${entryPath}`);
-  const child = spawn(process.execPath, [entryPath], {
+  const child = spawn(process.execPath, createStandaloneServerArgs(entryPath), {
     cwd: dirname(entryPath),
     env: {
       ...process.env,
       HOSTNAME: HOST,
       NODE_ENV: "production",
       PORT: String(port),
+      [STANDALONE_PARENT_PID_ENV]: String(process.pid),
     },
     stdio: ["ignore", "inherit", "inherit"],
     ...(process.platform === "win32" ? { windowsHide: true } : {}),
